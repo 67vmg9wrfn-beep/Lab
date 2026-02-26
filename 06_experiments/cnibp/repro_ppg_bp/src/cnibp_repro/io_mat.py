@@ -23,7 +23,14 @@ def _is_numeric_array(x: Any) -> bool:
 
 def _choose_channels(arr2d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     # Heuristic for unknown column ordering in Kachuee MAT variants.
-    if arr2d.ndim != 2 or arr2d.shape[1] < 2:
+    if arr2d.ndim != 2:
+        raise ValueError("Expected 2D array")
+
+    # Some MAT variants store channels on axis 0 (C x T).
+    if arr2d.shape[0] <= 4 and arr2d.shape[1] > arr2d.shape[0]:
+        arr2d = arr2d.T
+
+    if arr2d.shape[1] < 2:
         raise ValueError("Expected 2D array with >=2 channels")
 
     q95 = np.nanpercentile(arr2d, 95, axis=0)
@@ -82,9 +89,10 @@ def _walk_obj(obj: Any, source_file: str, start_index: int = 0) -> List[Record]:
 
     if hasattr(obj, "__dict__"):
         d = vars(obj)
-        if "ppg" in d and "abp" in d:
-            ppg = np.asarray(d["ppg"]).astype(np.float32).reshape(-1)
-            abp = np.asarray(d["abp"]).astype(np.float32).reshape(-1)
+        lower = {k.lower(): k for k in d.keys()}
+        if "ppg" in lower and "abp" in lower:
+            ppg = np.asarray(d[lower["ppg"]]).astype(np.float32).reshape(-1)
+            abp = np.asarray(d[lower["abp"]]).astype(np.float32).reshape(-1)
             out.append(Record(source_file=source_file, record_index=idx, ppg=ppg, abp=abp))
             return out
         for v in d.values():
@@ -94,9 +102,10 @@ def _walk_obj(obj: Any, source_file: str, start_index: int = 0) -> List[Record]:
         return out
 
     if isinstance(obj, dict):
-        if "ppg" in obj and "abp" in obj:
-            ppg = np.asarray(obj["ppg"]).astype(np.float32).reshape(-1)
-            abp = np.asarray(obj["abp"]).astype(np.float32).reshape(-1)
+        lower = {k.lower(): k for k in obj.keys()}
+        if "ppg" in lower and "abp" in lower:
+            ppg = np.asarray(obj[lower["ppg"]]).astype(np.float32).reshape(-1)
+            abp = np.asarray(obj[lower["abp"]]).astype(np.float32).reshape(-1)
             out.append(Record(source_file=source_file, record_index=idx, ppg=ppg, abp=abp))
             return out
         for v in obj.values():
@@ -108,6 +117,45 @@ def _walk_obj(obj: Any, source_file: str, start_index: int = 0) -> List[Record]:
     return out
 
 
+def _h5_ref_to_py(x: Any, f: h5py.File, visited: set[str]) -> Any:
+    if isinstance(x, h5py.Reference):
+        if not x:
+            return None
+        return _h5_obj_to_py(f[x], f, visited)
+    if isinstance(x, np.ndarray):
+        return _h5_data_to_py(x, f, visited)
+    return x
+
+
+def _h5_data_to_py(data: Any, f: h5py.File, visited: set[str]) -> Any:
+    if isinstance(data, np.ndarray):
+        if h5py.check_dtype(ref=data.dtype) is not None or data.dtype == object:
+            flat = [_h5_ref_to_py(x, f, visited) for x in data.flat]
+            arr = np.empty(len(flat), dtype=object)
+            arr[:] = flat
+            return arr.reshape(data.shape)
+        return np.asarray(data)
+    if isinstance(data, h5py.Reference):
+        return _h5_ref_to_py(data, f, visited)
+    return data
+
+
+def _h5_obj_to_py(obj: Any, f: h5py.File, visited: set[str]) -> Any:
+    name = getattr(obj, "name", None)
+    if isinstance(name, str) and name in visited:
+        return None
+    if isinstance(name, str):
+        visited.add(name)
+
+    if isinstance(obj, h5py.Dataset):
+        return _h5_data_to_py(obj[()], f, visited)
+
+    if isinstance(obj, h5py.Group):
+        return {k: _h5_obj_to_py(obj[k], f, visited) for k in obj.keys()}
+
+    return obj
+
+
 def _load_mat_file(path: Path) -> Dict[str, Any]:
     try:
         data = loadmat(path, squeeze_me=True, struct_as_record=False)
@@ -116,7 +164,9 @@ def _load_mat_file(path: Path) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
         with h5py.File(path, "r") as f:
             for k in f.keys():
-                out[k] = np.array(f[k])
+                if k.startswith("#"):
+                    continue
+                out[k] = _h5_obj_to_py(f[k], f, set())
         return out
 
 
