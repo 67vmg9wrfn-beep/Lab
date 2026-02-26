@@ -4,6 +4,7 @@ import argparse
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Tuple
 
 import numpy as np
 import pandas as pd
@@ -24,6 +25,59 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _build_memmaps_from_chunks(chunk_paths: list[Path], pre_dir: Path) -> Tuple[np.memmap, np.memmap]:
+    counts = []
+    feat_dim = None
+    tgt_dim = 2
+    for cp in chunk_paths:
+        d = np.load(cp)
+        x = d["X"]
+        y = d["y"]
+        if feat_dim is None:
+            feat_dim = int(x.shape[1])
+        tgt_dim = int(y.shape[1])
+        counts.append(int(x.shape[0]))
+
+    total_n = int(sum(counts))
+    x_path = pre_dir / "X.float16.mmap"
+    y_path = pre_dir / "y.float32.mmap"
+    manifest = {
+        "x_path": str(x_path),
+        "x_dtype": "float16",
+        "x_shape": [total_n, int(feat_dim)],
+        "y_path": str(y_path),
+        "y_dtype": "float32",
+        "y_shape": [total_n, int(tgt_dim)],
+    }
+
+    X_m = np.memmap(x_path, dtype=np.float16, mode="w+", shape=(total_n, int(feat_dim)))
+    y_m = np.memmap(y_path, dtype=np.float32, mode="w+", shape=(total_n, int(tgt_dim)))
+
+    s = 0
+    for cp in chunk_paths:
+        d = np.load(cp)
+        x = d["X"].astype(np.float16, copy=False)
+        y = d["y"].astype(np.float32, copy=False)
+        e = s + len(x)
+        X_m[s:e] = x
+        y_m[s:e] = y
+        s = e
+
+    X_m.flush()
+    y_m.flush()
+    with (pre_dir / "preprocessed_manifest.json").open("w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+    return X_m, y_m
+
+
+def _load_memmaps_from_manifest(pre_dir: Path) -> Tuple[np.memmap, np.memmap]:
+    with (pre_dir / "preprocessed_manifest.json").open("r", encoding="utf-8") as f:
+        m = json.load(f)
+    X_m = np.memmap(m["x_path"], dtype=np.float16, mode="r", shape=tuple(m["x_shape"]))
+    y_m = np.memmap(m["y_path"], dtype=np.float32, mode="r", shape=tuple(m["y_shape"]))
+    return X_m, y_m
+
+
 def main() -> None:
     args = parse_args()
 
@@ -41,15 +95,12 @@ def main() -> None:
     parts = [x.strip() for x in args.parts.split(",") if x.strip()]
     mat_files = [Path(args.drive_root) / p for p in parts]
 
-    npz_path = run_dir / "preprocessed_dataset.npz"
     pre_dir = run_dir / "preprocess"
     meta_path = pre_dir / "segments_meta.csv"
+    manifest_path = pre_dir / "preprocessed_manifest.json"
 
-    if args.reuse_preprocessed and npz_path.exists() and meta_path.exists():
-        data = np.load(npz_path)
-        X = data["X"].astype(np.float32)
-        y = data["y"].astype(np.float32)
-
+    if args.reuse_preprocessed and manifest_path.exists() and meta_path.exists():
+        X, y = _load_memmaps_from_manifest(pre_dir)
         meta = pd.read_csv(meta_path)
     else:
         p_cfg = PreprocessConfig(
@@ -99,23 +150,13 @@ def main() -> None:
             del records_i, X_i, y_i, meta_i, stats_i
 
         print(f"[INFO] combining {len(chunk_paths)} preprocessed chunks", flush=True)
-        X_parts = []
-        y_parts = []
-        for cp in chunk_paths:
-            d = np.load(cp)
-            X_parts.append(d["X"].astype(np.float32))
-            y_parts.append(d["y"].astype(np.float32))
-
-        X = np.concatenate(X_parts, axis=0)
-        y = np.concatenate(y_parts, axis=0)
+        X, y = _build_memmaps_from_chunks(chunk_paths, pre_dir)
         meta = pd.concat(meta_parts, ignore_index=True)
 
         save_preprocess_report(stats_total, pre_dir)
         save_meta(meta, pre_dir)
         save_sample_waveforms(X, y, pre_dir / "qa", fs=p_cfg.fs)
         save_target_hist(y, pre_dir / "qa")
-
-        np.savez_compressed(npz_path, X=X, y=y)
 
     t_cfg = TrainConfig(
         seed=int(cfg["seed"]),
