@@ -1,12 +1,10 @@
 # Ignore everything by default
 *
 
-# Keep git metadata and ignore config itself
+# Keep this file
 !.gitignore
 
-# Track only experiments directory
+# Track only CNIBP experiments
 !06_experiments/
-!06_experiments/**
-
-# Optional keep README at root if needed
-# !README.md
+!06_experiments/cnibp/
+!06_experiments/cnibp/**
