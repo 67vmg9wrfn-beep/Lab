@@ -1,0 +1,4 @@
+schema_version: v1
+name_for_human: "Paper To PPT"
+description_for_human: "按统一结构把论文内容转换为逐篇汇报PPT草稿与讲稿备注。"
+default_prompt: "Create one presentation package per paper from /Users/codex/Lab/03_summaries into /Users/codex/Lab/07_reports/ppt."

@@ -1,0 +1,15 @@
+{
+  "fs": 125,
+  "window_sec": 8.192,
+  "overlap": 0.75,
+  "min_duration_sec": 480,
+  "abp_max": 200.0,
+  "flatline_std_threshold": 0.001,
+  "seed": 42,
+  "n_splits": 5,
+  "batch_size": 64,
+  "max_epochs": 500,
+  "patience": 30,
+  "lr": 0.001,
+  "subject_level_split": false
+}
