@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from .io_mat import load_records
 from .preprocess import PreprocessConfig, preprocess_records
@@ -41,18 +42,16 @@ def main() -> None:
     mat_files = [Path(args.drive_root) / p for p in parts]
 
     npz_path = run_dir / "preprocessed_dataset.npz"
-    meta_path = run_dir / "preprocess" / "segments_meta.csv"
+    pre_dir = run_dir / "preprocess"
+    meta_path = pre_dir / "segments_meta.csv"
 
     if args.reuse_preprocessed and npz_path.exists() and meta_path.exists():
         data = np.load(npz_path)
         X = data["X"].astype(np.float32)
         y = data["y"].astype(np.float32)
-        import pandas as pd
 
         meta = pd.read_csv(meta_path)
     else:
-        records = load_records(mat_files)
-
         p_cfg = PreprocessConfig(
             fs=int(cfg["fs"]),
             window_sec=float(cfg["window_sec"]),
@@ -61,10 +60,57 @@ def main() -> None:
             abp_max=float(cfg["abp_max"]),
             flatline_std_threshold=float(cfg["flatline_std_threshold"]),
         )
-        X, y, meta, stats = preprocess_records(records, p_cfg)
+        chunks_dir = pre_dir / "chunks"
+        chunks_dir.mkdir(parents=True, exist_ok=True)
 
-        pre_dir = run_dir / "preprocess"
-        save_preprocess_report(stats, pre_dir)
+        stats_total = {
+            "records_total": 0,
+            "records_kept": 0,
+            "records_removed_short": 0,
+            "records_removed_abp_high": 0,
+            "records_removed_flatline": 0,
+            "segments_total": 0,
+            "segments_kept": 0,
+            "segments_removed_bad_target": 0,
+        }
+        chunk_paths = []
+        meta_parts = []
+
+        # Process each MAT part independently to reduce memory peak.
+        for i, mf in enumerate(mat_files, start=1):
+            print(f"[INFO] loading {mf} ({i}/{len(mat_files)})", flush=True)
+            records_i = load_records([mf])
+            print(f"[INFO] records parsed from {mf.name}: {len(records_i)}", flush=True)
+            X_i, y_i, meta_i, stats_i = preprocess_records(records_i, p_cfg)
+            print(
+                f"[INFO] segments kept from {mf.name}: {len(X_i)} (shape={X_i.shape})",
+                flush=True,
+            )
+
+            for k in stats_total:
+                stats_total[k] += int(stats_i.get(k, 0))
+
+            chunk_path = chunks_dir / f"chunk_{i:02d}_{mf.stem}.npz"
+            np.savez_compressed(chunk_path, X=X_i, y=y_i)
+            chunk_paths.append(chunk_path)
+            meta_parts.append(meta_i)
+
+            # Release per-file arrays before next file.
+            del records_i, X_i, y_i, meta_i, stats_i
+
+        print(f"[INFO] combining {len(chunk_paths)} preprocessed chunks", flush=True)
+        X_parts = []
+        y_parts = []
+        for cp in chunk_paths:
+            d = np.load(cp)
+            X_parts.append(d["X"].astype(np.float32))
+            y_parts.append(d["y"].astype(np.float32))
+
+        X = np.concatenate(X_parts, axis=0)
+        y = np.concatenate(y_parts, axis=0)
+        meta = pd.concat(meta_parts, ignore_index=True)
+
+        save_preprocess_report(stats_total, pre_dir)
         save_meta(meta, pre_dir)
         save_sample_waveforms(X, y, pre_dir / "qa", fs=p_cfg.fs)
         save_target_hist(y, pre_dir / "qa")
