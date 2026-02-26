@@ -1,0 +1,12 @@
+# Ignore everything by default
+*
+
+# Keep git metadata and ignore config itself
+!.gitignore
+
+# Track only experiments directory
+!06_experiments/
+!06_experiments/**
+
+# Optional keep README at root if needed
+# !README.md

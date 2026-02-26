@@ -1,4 +1,0 @@
-schema_version: v1
-name_for_human: "Paper Analysis"
-description_for_human: "系统化分析单篇或多篇学术论文，并输出可比较的结构化结论。"
-default_prompt: "Analyze academic papers under /Users/codex/Lab/02_papers and produce standardized outputs in /Users/codex/Lab/03_summaries and /Users/codex/Lab/07_reports."
