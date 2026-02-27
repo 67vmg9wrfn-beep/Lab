@@ -178,6 +178,7 @@ def train_5fold(
         best_epoch = 0
         wait = 0
         history = []
+        best_state = None
 
         for epoch in tqdm(range(1, cfg.max_epochs + 1), desc=f"fold{fold}"):
             train_m = _run_epoch(
@@ -190,11 +191,17 @@ def train_5fold(
             row = {"epoch": epoch, **{f"train_{k}": v for k, v in train_m.items()}, **{f"val_{k}": v for k, v in val_m.items()}}
             history.append(row)
 
-            if val_m["loss"] < best_val:
+            val_loss = float(val_m["loss"])
+            if np.isfinite(val_loss) and val_loss < best_val:
                 best_val = val_m["loss"]
                 best_epoch = epoch
                 wait = 0
-                torch.save(model.state_dict(), fold_dir / "best.pt")
+                # Keep in-memory best weights so eval can continue even if Drive write fails.
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                try:
+                    torch.save(best_state, fold_dir / "best.pt")
+                except Exception as e:
+                    print(f"[WARN] failed to save best.pt for fold {fold}: {e}", flush=True)
             else:
                 wait += 1
 
@@ -204,7 +211,16 @@ def train_5fold(
         hist_df = pd.DataFrame(history)
         hist_df.to_csv(fold_dir / "history.csv", index=False)
 
-        model.load_state_dict(torch.load(fold_dir / "best.pt", map_location=device))
+        best_path = fold_dir / "best.pt"
+        if best_state is not None:
+            model.load_state_dict(best_state)
+        elif best_path.exists():
+            model.load_state_dict(torch.load(best_path, map_location=device))
+        else:
+            print(
+                f"[WARN] no finite validation improvement in fold {fold}; evaluating last-epoch weights.",
+                flush=True,
+            )
         test_m = _run_epoch(
             model, test_loader, criterion, optimizer, device, train=False, scaler=scaler, use_amp=cfg.use_amp
         )
