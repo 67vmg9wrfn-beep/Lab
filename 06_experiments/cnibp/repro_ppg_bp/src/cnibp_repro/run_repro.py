@@ -79,6 +79,10 @@ def _build_memmaps_from_chunks(chunk_paths: list[Path], pre_dir: Path) -> Tuple[
 def _load_memmaps_from_manifest(pre_dir: Path) -> Tuple[np.memmap, np.memmap]:
     with (pre_dir / "preprocessed_manifest.json").open("r", encoding="utf-8") as f:
         m = json.load(f)
+    if not Path(m["x_path"]).exists() or not Path(m["y_path"]).exists():
+        raise FileNotFoundError(
+            f"Memmap files not found for manifest in {pre_dir}: {m.get('x_path')} , {m.get('y_path')}"
+        )
     X_m = np.memmap(m["x_path"], dtype=np.float16, mode="r", shape=tuple(m["x_shape"]))
     y_m = np.memmap(m["y_path"], dtype=np.float32, mode="r", shape=tuple(m["y_shape"]))
     return X_m, y_m
@@ -130,11 +134,17 @@ def main() -> None:
     meta_path = reuse_pre_dir / "segments_meta.csv"
     manifest_path = reuse_pre_dir / "preprocessed_manifest.json"
 
+    can_reuse = False
     if (args.reuse_preprocessed or args.reuse_from_run_dir) and manifest_path.exists() and meta_path.exists():
-        print(f"[INFO] reusing preprocessed data from: {reuse_pre_dir}", flush=True)
-        X, y = _load_memmaps_from_manifest(reuse_pre_dir)
-        meta = pd.read_csv(meta_path)
-    else:
+        try:
+            print(f"[INFO] reusing preprocessed data from: {reuse_pre_dir}", flush=True)
+            X, y = _load_memmaps_from_manifest(reuse_pre_dir)
+            meta = pd.read_csv(meta_path)
+            can_reuse = True
+        except Exception as e:
+            print(f"[WARN] reuse requested but not usable ({e}); fallback to fresh preprocessing.", flush=True)
+
+    if not can_reuse:
         p_cfg = PreprocessConfig(
             fs=int(cfg["fs"]),
             window_sec=float(cfg["window_sec"]),
