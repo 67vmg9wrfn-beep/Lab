@@ -26,12 +26,21 @@ class TrainConfig:
     lr: float = 1e-3
     device: str = "cuda"
     subject_level_split: bool = False
+    num_workers: int = 4
+    pin_memory: bool = True
+    persistent_workers: bool = True
+    prefetch_factor: int = 2
+    use_amp: bool = True
 
 
 def set_seed(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    if torch.backends.cudnn.is_available():
+        torch.backends.cudnn.benchmark = True
+    if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
+        torch.backends.cuda.matmul.allow_tf32 = True
 
 
 def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
@@ -63,29 +72,53 @@ class IndexedArrayDataset(Dataset):
         return x, t
 
 
-def _to_loader(X: np.ndarray, y: np.ndarray, indices: np.ndarray, batch_size: int, shuffle: bool) -> DataLoader:
+def _to_loader(
+    X: np.ndarray,
+    y: np.ndarray,
+    indices: np.ndarray,
+    batch_size: int,
+    shuffle: bool,
+    cfg: TrainConfig,
+) -> DataLoader:
     ds = IndexedArrayDataset(X, y, indices)
-    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=False)
+    kwargs = {
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+        "drop_last": False,
+        "num_workers": int(cfg.num_workers),
+    }
+    if cfg.num_workers > 0:
+        kwargs["pin_memory"] = bool(cfg.pin_memory)
+        kwargs["persistent_workers"] = bool(cfg.persistent_workers)
+        kwargs["prefetch_factor"] = int(cfg.prefetch_factor)
+    return DataLoader(ds, **kwargs)
 
 
-def _run_epoch(model, loader, criterion, optimizer, device, train: bool):
+def _run_epoch(model, loader, criterion, optimizer, device, train: bool, scaler, use_amp: bool):
     model.train(mode=train)
     losses = []
     ys = []
     ps = []
+    amp_enabled = bool(use_amp and str(device).startswith("cuda"))
 
     for xb, yb in loader:
-        xb = xb.to(device)
-        yb = yb.to(device)
+        xb = xb.to(device, non_blocking=True)
+        yb = yb.to(device, non_blocking=True)
         if train:
             optimizer.zero_grad(set_to_none=True)
 
-        pred, _ = model(xb)
-        loss = criterion(pred, yb)
+        with torch.cuda.amp.autocast(enabled=amp_enabled):
+            pred, _ = model(xb)
+            loss = criterion(pred, yb)
 
         if train:
-            loss.backward()
-            optimizer.step()
+            if amp_enabled:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
 
         losses.append(loss.detach().item())
         ys.append(yb.detach().cpu().numpy())
@@ -121,6 +154,7 @@ def train_5fold(
 
     device = cfg.device if torch.cuda.is_available() else "cpu"
     criterion = nn.MSELoss()
+    scaler = torch.cuda.amp.GradScaler(enabled=bool(cfg.use_amp and str(device).startswith("cuda")))
 
     fold_rows: List[Dict[str, float]] = []
 
@@ -133,9 +167,9 @@ def train_5fold(
             train_idx, test_size=0.1, random_state=cfg.seed, shuffle=True
         )
 
-        train_loader = _to_loader(X, y, tr_idx, cfg.batch_size, shuffle=True)
-        val_loader = _to_loader(X, y, val_idx, cfg.batch_size, shuffle=False)
-        test_loader = _to_loader(X, y, test_idx, cfg.batch_size, shuffle=False)
+        train_loader = _to_loader(X, y, tr_idx, cfg.batch_size, shuffle=True, cfg=cfg)
+        val_loader = _to_loader(X, y, val_idx, cfg.batch_size, shuffle=False, cfg=cfg)
+        test_loader = _to_loader(X, y, test_idx, cfg.batch_size, shuffle=False, cfg=cfg)
 
         model = CNNBiLSTMAttnRegressor().to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
@@ -146,8 +180,12 @@ def train_5fold(
         history = []
 
         for epoch in tqdm(range(1, cfg.max_epochs + 1), desc=f"fold{fold}"):
-            train_m = _run_epoch(model, train_loader, criterion, optimizer, device, train=True)
-            val_m = _run_epoch(model, val_loader, criterion, optimizer, device, train=False)
+            train_m = _run_epoch(
+                model, train_loader, criterion, optimizer, device, train=True, scaler=scaler, use_amp=cfg.use_amp
+            )
+            val_m = _run_epoch(
+                model, val_loader, criterion, optimizer, device, train=False, scaler=scaler, use_amp=cfg.use_amp
+            )
 
             row = {"epoch": epoch, **{f"train_{k}": v for k, v in train_m.items()}, **{f"val_{k}": v for k, v in val_m.items()}}
             history.append(row)
@@ -167,7 +205,9 @@ def train_5fold(
         hist_df.to_csv(fold_dir / "history.csv", index=False)
 
         model.load_state_dict(torch.load(fold_dir / "best.pt", map_location=device))
-        test_m = _run_epoch(model, test_loader, criterion, optimizer, device, train=False)
+        test_m = _run_epoch(
+            model, test_loader, criterion, optimizer, device, train=False, scaler=scaler, use_amp=cfg.use_amp
+        )
 
         fold_row = {
             "fold": fold,

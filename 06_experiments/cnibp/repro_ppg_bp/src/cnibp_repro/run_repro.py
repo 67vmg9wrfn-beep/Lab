@@ -177,6 +177,11 @@ def main() -> None:
         patience=int(cfg["patience"]),
         lr=float(cfg["lr"]),
         subject_level_split=bool(cfg["subject_level_split"]),
+        num_workers=int(cfg.get("num_workers", 4)),
+        pin_memory=bool(cfg.get("pin_memory", True)),
+        persistent_workers=bool(cfg.get("persistent_workers", True)),
+        prefetch_factor=int(cfg.get("prefetch_factor", 2)),
+        use_amp=bool(cfg.get("use_amp", True)),
     )
 
     groups = meta["record_id"].to_numpy() if t_cfg.subject_level_split else None
