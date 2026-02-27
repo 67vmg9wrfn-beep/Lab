@@ -28,6 +28,12 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Reuse preprocessing artifacts from an existing run dir (contains preprocess/manifest+meta).",
     )
+    p.add_argument(
+        "--resume_from_run_dir",
+        type=str,
+        default="",
+        help="Resume training in an existing run dir (skip completed folds and continue interrupted fold).",
+    )
     return p.parse_args()
 
 
@@ -95,9 +101,13 @@ def main() -> None:
         cfg = json.load(f)
 
     out_root = Path(args.output_root)
-    run_id = datetime.now().strftime("run_%Y%m%d_%H%M%S")
-    run_dir = out_root / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
+    if args.resume_from_run_dir:
+        run_dir = Path(args.resume_from_run_dir)
+        run_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        run_id = datetime.now().strftime("run_%Y%m%d_%H%M%S")
+        run_dir = out_root / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
 
     with (run_dir / "resolved_config.json").open("w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
@@ -130,6 +140,8 @@ def main() -> None:
     reuse_pre_dir = pre_dir
     if args.reuse_from_run_dir:
         reuse_pre_dir = Path(args.reuse_from_run_dir) / "preprocess"
+    elif args.resume_from_run_dir:
+        reuse_pre_dir = Path(args.resume_from_run_dir) / "preprocess"
 
     meta_path = reuse_pre_dir / "segments_meta.csv"
     manifest_path = reuse_pre_dir / "preprocessed_manifest.json"
@@ -213,6 +225,7 @@ def main() -> None:
         persistent_workers=bool(cfg.get("persistent_workers", True)),
         prefetch_factor=int(cfg.get("prefetch_factor", 2)),
         use_amp=bool(cfg.get("use_amp", True)),
+        resume=bool(args.resume_from_run_dir),
     )
 
     groups = meta["record_id"].to_numpy() if t_cfg.subject_level_split else None

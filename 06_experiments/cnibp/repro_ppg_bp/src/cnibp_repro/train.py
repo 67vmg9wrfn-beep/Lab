@@ -31,6 +31,7 @@ class TrainConfig:
     persistent_workers: bool = True
     prefetch_factor: int = 2
     use_amp: bool = True
+    resume: bool = False
 
 
 def set_seed(seed: int) -> None:
@@ -157,10 +158,23 @@ def train_5fold(
     scaler = torch.cuda.amp.GradScaler(enabled=bool(cfg.use_amp and str(device).startswith("cuda")))
 
     fold_rows: List[Dict[str, float]] = []
+    existing_metrics_path = out_dir / "fold_metrics.csv"
+    if cfg.resume and existing_metrics_path.exists():
+        prev = pd.read_csv(existing_metrics_path)
+        fold_rows.extend(prev.to_dict(orient="records"))
 
     for fold, (train_idx, test_idx) in enumerate(_split_generator(cfg, len(X), groups), start=1):
         fold_dir = out_dir / f"fold_{fold}"
         fold_dir.mkdir(parents=True, exist_ok=True)
+        fold_metric_path = fold_dir / "test_metrics.json"
+        if cfg.resume and fold_metric_path.exists():
+            with fold_metric_path.open("r", encoding="utf-8") as f:
+                row = json.load(f)
+            # Replace same fold if present.
+            fold_rows = [r for r in fold_rows if int(r.get("fold", -1)) != fold]
+            fold_rows.append(row)
+            print(f"[INFO] fold {fold} already completed; skipping.", flush=True)
+            continue
 
         # 训练集中再划10%做验证，复现论文流程。
         tr_idx, val_idx = train_test_split(
@@ -179,8 +193,35 @@ def train_5fold(
         wait = 0
         history = []
         best_state = None
+        start_epoch = 1
+        last_ckpt_path = fold_dir / "last.ckpt"
 
-        for epoch in tqdm(range(1, cfg.max_epochs + 1), desc=f"fold{fold}"):
+        if cfg.resume and last_ckpt_path.exists():
+            try:
+                ckpt = torch.load(last_ckpt_path, map_location=device)
+                model.load_state_dict(ckpt["model_state"])
+                optimizer.load_state_dict(ckpt["optimizer_state"])
+                if "scaler_state" in ckpt and ckpt["scaler_state"] is not None:
+                    scaler.load_state_dict(ckpt["scaler_state"])
+                best_val = float(ckpt.get("best_val", best_val))
+                best_epoch = int(ckpt.get("best_epoch", best_epoch))
+                wait = int(ckpt.get("wait", wait))
+                start_epoch = int(ckpt.get("epoch", 0)) + 1
+                if (fold_dir / "best.pt").exists():
+                    best_state = torch.load(fold_dir / "best.pt", map_location="cpu")
+                if (fold_dir / "history.csv").exists():
+                    history = pd.read_csv(fold_dir / "history.csv").to_dict(orient="records")
+                print(f"[INFO] resumed fold {fold} from epoch {start_epoch}.", flush=True)
+            except Exception as e:
+                print(f"[WARN] failed to resume fold {fold} from checkpoint: {e}", flush=True)
+                start_epoch = 1
+                history = []
+                best_state = None
+                best_val = float("inf")
+                best_epoch = 0
+                wait = 0
+
+        for epoch in tqdm(range(start_epoch, cfg.max_epochs + 1), desc=f"fold{fold}"):
             train_m = _run_epoch(
                 model, train_loader, criterion, optimizer, device, train=True, scaler=scaler, use_amp=cfg.use_amp
             )
@@ -207,6 +248,22 @@ def train_5fold(
 
             if wait >= cfg.patience:
                 break
+
+            try:
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "model_state": model.state_dict(),
+                        "optimizer_state": optimizer.state_dict(),
+                        "scaler_state": scaler.state_dict() if scaler is not None else None,
+                        "best_val": best_val,
+                        "best_epoch": best_epoch,
+                        "wait": wait,
+                    },
+                    last_ckpt_path,
+                )
+            except Exception as e:
+                print(f"[WARN] failed to save last checkpoint for fold {fold}: {e}", flush=True)
 
         hist_df = pd.DataFrame(history)
         hist_df.to_csv(fold_dir / "history.csv", index=False)
@@ -235,10 +292,14 @@ def train_5fold(
         }
         fold_rows.append(fold_row)
 
-        with (fold_dir / "test_metrics.json").open("w", encoding="utf-8") as f:
+        with fold_metric_path.open("w", encoding="utf-8") as f:
             json.dump(fold_row, f, indent=2)
 
-    res = pd.DataFrame(fold_rows)
+    # Deduplicate by fold (keep latest row for each fold)
+    fold_rows_sorted = {}
+    for r in fold_rows:
+        fold_rows_sorted[int(r["fold"])] = r
+    res = pd.DataFrame([fold_rows_sorted[k] for k in sorted(fold_rows_sorted.keys())])
     res.to_csv(out_dir / "fold_metrics.csv", index=False)
 
     avg = {
