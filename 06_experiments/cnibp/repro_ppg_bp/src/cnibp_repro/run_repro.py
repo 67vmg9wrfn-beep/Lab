@@ -99,7 +99,28 @@ def main() -> None:
         json.dump(cfg, f, indent=2)
 
     parts = [x.strip() for x in args.parts.split(",") if x.strip()]
-    mat_files = [Path(args.drive_root) / p for p in parts]
+    drive_root = Path(args.drive_root)
+    mat_files: list[Path] = []
+    for p in parts:
+        pp = Path(p)
+        cand = pp if pp.is_absolute() else (drive_root / pp)
+        if cand.exists():
+            mat_files.append(cand)
+            continue
+
+        # Fallback: resolve by basename under drive_root recursively.
+        matches = list(drive_root.rglob(pp.name))
+        if len(matches) == 1:
+            print(f"[WARN] part not found at expected path; resolved by search: {matches[0]}", flush=True)
+            mat_files.append(matches[0])
+            continue
+        if len(matches) > 1:
+            print(f"[WARN] multiple matches for {pp.name}; using first: {matches[0]}", flush=True)
+            mat_files.append(matches[0])
+            continue
+        raise FileNotFoundError(
+            f"Part file not found: {p}. Checked: {cand} and recursive search under {drive_root}"
+        )
 
     pre_dir = run_dir / "preprocess"
     reuse_pre_dir = pre_dir
