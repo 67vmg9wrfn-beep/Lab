@@ -22,6 +22,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--config", type=str, required=True)
     p.add_argument("--output_root", type=str, required=True)
     p.add_argument("--reuse_preprocessed", action="store_true")
+    p.add_argument(
+        "--reuse_from_run_dir",
+        type=str,
+        default="",
+        help="Reuse preprocessing artifacts from an existing run dir (contains preprocess/manifest+meta).",
+    )
     return p.parse_args()
 
 
@@ -96,11 +102,16 @@ def main() -> None:
     mat_files = [Path(args.drive_root) / p for p in parts]
 
     pre_dir = run_dir / "preprocess"
-    meta_path = pre_dir / "segments_meta.csv"
-    manifest_path = pre_dir / "preprocessed_manifest.json"
+    reuse_pre_dir = pre_dir
+    if args.reuse_from_run_dir:
+        reuse_pre_dir = Path(args.reuse_from_run_dir) / "preprocess"
 
-    if args.reuse_preprocessed and manifest_path.exists() and meta_path.exists():
-        X, y = _load_memmaps_from_manifest(pre_dir)
+    meta_path = reuse_pre_dir / "segments_meta.csv"
+    manifest_path = reuse_pre_dir / "preprocessed_manifest.json"
+
+    if (args.reuse_preprocessed or args.reuse_from_run_dir) and manifest_path.exists() and meta_path.exists():
+        print(f"[INFO] reusing preprocessed data from: {reuse_pre_dir}", flush=True)
+        X, y = _load_memmaps_from_manifest(reuse_pre_dir)
         meta = pd.read_csv(meta_path)
     else:
         p_cfg = PreprocessConfig(
