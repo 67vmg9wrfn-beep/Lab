@@ -32,6 +32,7 @@ class TrainConfig:
     prefetch_factor: int = 2
     use_amp: bool = True
     resume: bool = False
+    max_folds: int = 0  # 0 means run all folds
 
 
 def set_seed(seed: int) -> None:
@@ -164,6 +165,8 @@ def train_5fold(
         fold_rows.extend(prev.to_dict(orient="records"))
 
     for fold, (train_idx, test_idx) in enumerate(_split_generator(cfg, len(X), groups), start=1):
+        if int(cfg.max_folds) > 0 and fold > int(cfg.max_folds):
+            break
         fold_dir = out_dir / f"fold_{fold}"
         fold_dir.mkdir(parents=True, exist_ok=True)
         fold_metric_path = fold_dir / "test_metrics.json"

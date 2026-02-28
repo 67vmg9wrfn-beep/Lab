@@ -241,6 +241,7 @@ def main() -> None:
         prefetch_factor=int(cfg.get("prefetch_factor", 2)),
         use_amp=bool(cfg.get("use_amp", True)),
         resume=bool(args.resume_from_run_dir),
+        max_folds=int(cfg.get("max_folds", 0)),
     )
 
     groups = meta["record_id"].to_numpy() if t_cfg.subject_level_split else None
