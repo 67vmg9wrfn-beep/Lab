@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Tuple
@@ -10,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from .io_mat import load_records
+from . import __version__
 from .preprocess import PreprocessConfig, preprocess_records
 from .qa import save_meta, save_preprocess_report, save_sample_waveforms, save_target_hist
 from .train import TrainConfig, train_5fold
@@ -67,6 +69,26 @@ def _load_run_cfg(run_dir: Path) -> dict | None:
             return json.load(f)
     except Exception:
         return None
+
+
+def _detect_git_sha() -> str:
+    try:
+        cur = Path(__file__).resolve()
+        repo_root = None
+        for p in [cur.parent, *cur.parents]:
+            if (p / ".git").exists():
+                repo_root = p
+                break
+        if repo_root is None:
+            return "unknown"
+        out = subprocess.check_output(
+            ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        return out if out else "unknown"
+    except Exception:
+        return "unknown"
 
 
 def parse_args() -> argparse.Namespace:
@@ -153,6 +175,11 @@ def main() -> None:
 
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = json.load(f)
+
+    print(
+        f"[VERSION] cnibp_repro={__version__} git={_detect_git_sha()} file={Path(__file__).resolve()}",
+        flush=True,
+    )
 
     out_root = Path(args.output_root)
 
