@@ -164,6 +164,19 @@ def main() -> None:
             min_duration_sec=int(cfg["min_duration_sec"]),
             abp_max=float(cfg["abp_max"]),
             flatline_std_threshold=float(cfg["flatline_std_threshold"]),
+            ppg_norm_mode=str(cfg.get("ppg_norm_mode", "none")),
+            zscore_eps=float(cfg.get("zscore_eps", 1e-6)),
+            abp_label_mode=str(cfg.get("abp_label_mode", "paper")),
+            abp_filter_mode=str(cfg.get("abp_filter_mode", "none")),
+            abp_lowpass_hz=float(cfg.get("abp_lowpass_hz", 12.0)),
+            abp_peak_distance_sec=float(cfg.get("abp_peak_distance_sec", 0.25)),
+            abp_peak_prominence=float(cfg.get("abp_peak_prominence", 2.0)),
+            sbp_min=float(cfg.get("sbp_min", 70.0)),
+            sbp_max_label=float(cfg.get("sbp_max_label", 220.0)),
+            dbp_min=float(cfg.get("dbp_min", 40.0)),
+            dbp_max_label=float(cfg.get("dbp_max_label", 140.0)),
+            pulse_pressure_min=float(cfg.get("pulse_pressure_min", 10.0)),
+            pulse_pressure_max=float(cfg.get("pulse_pressure_max", 120.0)),
         )
         chunks_dir = pre_dir / "chunks"
         chunks_dir.mkdir(parents=True, exist_ok=True)
@@ -177,6 +190,8 @@ def main() -> None:
             "segments_total": 0,
             "segments_kept": 0,
             "segments_removed_bad_target": 0,
+            "segments_removed_flatline": 0,
+            "segments_removed_bad_label_qc": 0,
         }
         chunk_paths = []
         meta_parts = []
