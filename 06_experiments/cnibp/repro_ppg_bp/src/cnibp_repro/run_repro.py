@@ -15,6 +15,60 @@ from .qa import save_meta, save_preprocess_report, save_sample_waveforms, save_t
 from .train import TrainConfig, train_5fold
 
 
+def _cfg_sig_pre(cfg: dict) -> dict:
+    keys = [
+        "fs",
+        "window_sec",
+        "overlap",
+        "min_duration_sec",
+        "abp_max",
+        "flatline_std_threshold",
+        "ppg_norm_mode",
+        "zscore_eps",
+        "abp_label_mode",
+        "abp_filter_mode",
+        "abp_lowpass_hz",
+        "abp_peak_distance_sec",
+        "abp_peak_prominence",
+        "sbp_min",
+        "sbp_max_label",
+        "dbp_min",
+        "dbp_max_label",
+        "pulse_pressure_min",
+        "pulse_pressure_max",
+    ]
+    return {k: cfg.get(k) for k in keys}
+
+
+def _cfg_sig_train(cfg: dict) -> dict:
+    keys = [
+        "seed",
+        "n_splits",
+        "batch_size",
+        "max_epochs",
+        "patience",
+        "lr",
+        "subject_level_split",
+        "num_workers",
+        "pin_memory",
+        "persistent_workers",
+        "prefetch_factor",
+        "use_amp",
+    ]
+    return {k: cfg.get(k) for k in keys}
+
+
+def _load_run_cfg(run_dir: Path) -> dict | None:
+    p = run_dir / "resolved_config.json"
+    if not p.exists():
+        return None
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Reproduce CNIBP paper with Colab/Drive workflow")
     p.add_argument("--drive_root", type=str, required=True, help="Google Drive folder containing Part_0.mat ... Part_4.mat")
@@ -101,8 +155,30 @@ def main() -> None:
         cfg = json.load(f)
 
     out_root = Path(args.output_root)
-    if args.resume_from_run_dir:
-        run_dir = Path(args.resume_from_run_dir)
+
+    # Validate reuse/resume config compatibility to avoid cross-experiment contamination.
+    reuse_from_run_dir = Path(args.reuse_from_run_dir) if args.reuse_from_run_dir else None
+    if reuse_from_run_dir is not None:
+        prev_cfg = _load_run_cfg(reuse_from_run_dir)
+        if prev_cfg is None or _cfg_sig_pre(prev_cfg) != _cfg_sig_pre(cfg):
+            print(
+                f"[WARN] reuse_from_run_dir incompatible with current preprocessing config; ignoring: {reuse_from_run_dir}",
+                flush=True,
+            )
+            reuse_from_run_dir = None
+
+    resume_from_run_dir = Path(args.resume_from_run_dir) if args.resume_from_run_dir else None
+    if resume_from_run_dir is not None:
+        prev_cfg = _load_run_cfg(resume_from_run_dir)
+        if prev_cfg is None or _cfg_sig_pre(prev_cfg) != _cfg_sig_pre(cfg) or _cfg_sig_train(prev_cfg) != _cfg_sig_train(cfg):
+            print(
+                f"[WARN] resume_from_run_dir incompatible with current config; ignoring: {resume_from_run_dir}",
+                flush=True,
+            )
+            resume_from_run_dir = None
+
+    if resume_from_run_dir is not None:
+        run_dir = resume_from_run_dir
         run_dir.mkdir(parents=True, exist_ok=True)
     else:
         run_id = datetime.now().strftime("run_%Y%m%d_%H%M%S")
@@ -138,16 +214,16 @@ def main() -> None:
 
     pre_dir = run_dir / "preprocess"
     reuse_pre_dir = pre_dir
-    if args.reuse_from_run_dir:
-        reuse_pre_dir = Path(args.reuse_from_run_dir) / "preprocess"
-    elif args.resume_from_run_dir:
-        reuse_pre_dir = Path(args.resume_from_run_dir) / "preprocess"
+    if reuse_from_run_dir is not None:
+        reuse_pre_dir = reuse_from_run_dir / "preprocess"
+    elif resume_from_run_dir is not None:
+        reuse_pre_dir = resume_from_run_dir / "preprocess"
 
     meta_path = reuse_pre_dir / "segments_meta.csv"
     manifest_path = reuse_pre_dir / "preprocessed_manifest.json"
 
     can_reuse = False
-    if (args.reuse_preprocessed or args.reuse_from_run_dir) and manifest_path.exists() and meta_path.exists():
+    if (args.reuse_preprocessed or reuse_from_run_dir is not None) and manifest_path.exists() and meta_path.exists():
         try:
             print(f"[INFO] reusing preprocessed data from: {reuse_pre_dir}", flush=True)
             X, y = _load_memmaps_from_manifest(reuse_pre_dir)
@@ -240,7 +316,7 @@ def main() -> None:
         persistent_workers=bool(cfg.get("persistent_workers", True)),
         prefetch_factor=int(cfg.get("prefetch_factor", 2)),
         use_amp=bool(cfg.get("use_amp", True)),
-        resume=bool(args.resume_from_run_dir),
+        resume=bool(resume_from_run_dir),
         max_folds=int(cfg.get("max_folds", 0)),
     )
 
