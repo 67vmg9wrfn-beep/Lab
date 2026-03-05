@@ -29,5 +29,7 @@
   "max_epochs": 30,
   "patience": 5,
   "lr": 0.001,
-  "subject_level_split": false
+  "subject_level_split": false,
+  "use_tqdm": true,
+  "progress_log_interval": 1
 }

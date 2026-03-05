@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
@@ -33,6 +34,8 @@ class TrainConfig:
     use_amp: bool = True
     resume: bool = False
     max_folds: int = 0  # 0 means run all folds
+    use_tqdm: bool = True
+    progress_log_interval: int = 1
 
 
 def set_seed(seed: int) -> None:
@@ -69,8 +72,8 @@ class IndexedArrayDataset(Dataset):
     def __getitem__(self, i: int):
         idx = int(self.indices[i])
         # Keep source arrays lightweight (possibly memmap/float16), cast per batch sample.
-        x = torch.from_numpy(np.asarray(self.X[idx], dtype=np.float32))
-        t = torch.from_numpy(np.asarray(self.y[idx], dtype=np.float32))
+        x = torch.from_numpy(np.array(self.X[idx], dtype=np.float32, copy=True))
+        t = torch.from_numpy(np.array(self.y[idx], dtype=np.float32, copy=True))
         return x, t
 
 
@@ -109,7 +112,7 @@ def _run_epoch(model, loader, criterion, optimizer, device, train: bool, scaler,
         if train:
             optimizer.zero_grad(set_to_none=True)
 
-        with torch.cuda.amp.autocast(enabled=amp_enabled):
+        with torch.amp.autocast("cuda", enabled=amp_enabled):
             pred, _ = model(xb)
             loss = criterion(pred, yb)
 
@@ -156,7 +159,7 @@ def train_5fold(
 
     device = cfg.device if torch.cuda.is_available() else "cpu"
     criterion = nn.MSELoss()
-    scaler = torch.cuda.amp.GradScaler(enabled=bool(cfg.use_amp and str(device).startswith("cuda")))
+    scaler = torch.amp.GradScaler("cuda", enabled=bool(cfg.use_amp and str(device).startswith("cuda")))
 
     fold_rows: List[Dict[str, float]] = []
     existing_metrics_path = out_dir / "fold_metrics.csv"
@@ -224,7 +227,14 @@ def train_5fold(
                 best_epoch = 0
                 wait = 0
 
-        for epoch in tqdm(range(start_epoch, cfg.max_epochs + 1), desc=f"fold{fold}"):
+        fold_start_wall = time.time()
+        progress_jsonl = fold_dir / "progress.jsonl"
+        epoch_iter = range(start_epoch, cfg.max_epochs + 1)
+        if cfg.use_tqdm:
+            epoch_iter = tqdm(epoch_iter, desc=f"fold{fold}")
+
+        for epoch in epoch_iter:
+            e0 = time.time()
             train_m = _run_epoch(
                 model, train_loader, criterion, optimizer, device, train=True, scaler=scaler, use_amp=cfg.use_amp
             )
@@ -267,6 +277,41 @@ def train_5fold(
                 )
             except Exception as e:
                 print(f"[WARN] failed to save last checkpoint for fold {fold}: {e}", flush=True)
+
+            if int(cfg.progress_log_interval) > 0 and ((epoch - start_epoch + 1) % int(cfg.progress_log_interval) == 0):
+                elapsed = time.time() - fold_start_wall
+                rec = {
+                    "fold": int(fold),
+                    "epoch": int(epoch),
+                    "max_epochs": int(cfg.max_epochs),
+                    "train_loss": float(train_m["loss"]),
+                    "val_loss": float(val_m["loss"]),
+                    "train_mae_sbp": float(train_m["mae_sbp"]),
+                    "train_mae_dbp": float(train_m["mae_dbp"]),
+                    "val_mae_sbp": float(val_m["mae_sbp"]),
+                    "val_mae_dbp": float(val_m["mae_dbp"]),
+                    "best_val": float(best_val),
+                    "wait": int(wait),
+                    "patience": int(cfg.patience),
+                    "epoch_sec": float(time.time() - e0),
+                    "elapsed_min": float(elapsed / 60.0),
+                }
+                try:
+                    with progress_jsonl.open("a", encoding="utf-8") as f:
+                        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                except Exception as e:
+                    print(f"[WARN] failed to append progress jsonl for fold {fold}: {e}", flush=True)
+                print(
+                    (
+                        f"[PROGRESS] fold={fold} epoch={epoch}/{cfg.max_epochs} "
+                        f"train_loss={train_m['loss']:.4f} val_loss={val_m['loss']:.4f} "
+                        f"train_mae=({train_m['mae_sbp']:.3f},{train_m['mae_dbp']:.3f}) "
+                        f"val_mae=({val_m['mae_sbp']:.3f},{val_m['mae_dbp']:.3f}) "
+                        f"best_val={best_val:.4f} wait={wait}/{cfg.patience} "
+                        f"epoch_sec={rec['epoch_sec']:.1f} elapsed_min={rec['elapsed_min']:.1f}"
+                    ),
+                    flush=True,
+                )
 
         hist_df = pd.DataFrame(history)
         hist_df.to_csv(fold_dir / "history.csv", index=False)

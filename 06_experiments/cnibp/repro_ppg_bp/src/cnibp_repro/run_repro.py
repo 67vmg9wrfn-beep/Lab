@@ -211,6 +211,7 @@ def main() -> None:
         run_id = datetime.now().strftime("run_%Y%m%d_%H%M%S")
         run_dir = out_root / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[INFO] run_dir = {run_dir}", flush=True)
 
     with (run_dir / "resolved_config.json").open("w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
@@ -345,6 +346,8 @@ def main() -> None:
         use_amp=bool(cfg.get("use_amp", True)),
         resume=bool(resume_from_run_dir),
         max_folds=int(cfg.get("max_folds", 0)),
+        use_tqdm=bool(cfg.get("use_tqdm", True)),
+        progress_log_interval=int(cfg.get("progress_log_interval", 1)),
     )
 
     groups = meta["record_id"].to_numpy() if t_cfg.subject_level_split else None

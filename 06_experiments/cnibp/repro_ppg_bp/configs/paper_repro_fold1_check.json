@@ -30,5 +30,7 @@
   "patience": 30,
   "lr": 0.001,
   "subject_level_split": false,
-  "max_folds": 1
+  "max_folds": 1,
+  "use_tqdm": true,
+  "progress_log_interval": 1
 }
