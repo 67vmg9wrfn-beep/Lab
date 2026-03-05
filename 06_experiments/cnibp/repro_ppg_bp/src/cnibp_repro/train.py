@@ -72,8 +72,13 @@ class IndexedArrayDataset(Dataset):
     def __getitem__(self, i: int):
         idx = int(self.indices[i])
         # Keep source arrays lightweight (possibly memmap/float16), cast per batch sample.
-        x = torch.from_numpy(np.array(self.X[idx], dtype=np.float32, copy=True))
-        t = torch.from_numpy(np.array(self.y[idx], dtype=np.float32, copy=True))
+        x_np = np.array(self.X[idx], dtype=np.float32, copy=True)
+        t_np = np.array(self.y[idx], dtype=np.float32, copy=True)
+        # Reuse legacy preprocess artifacts safely: sanitize NaN/Inf at load time.
+        np.nan_to_num(x_np, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+        np.nan_to_num(t_np, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+        x = torch.from_numpy(x_np)
+        t = torch.from_numpy(t_np)
         return x, t
 
 
@@ -246,6 +251,11 @@ def train_5fold(
             history.append(row)
 
             val_loss = float(val_m["loss"])
+            if not (np.isfinite(train_m["loss"]) and np.isfinite(val_loss)):
+                raise RuntimeError(
+                    "Non-finite loss encountered. Rebuild preprocessing without reuse/resume "
+                    "and confirm invalid-value filtering is enabled."
+                )
             if np.isfinite(val_loss) and val_loss < best_val:
                 best_val = val_m["loss"]
                 best_epoch = epoch

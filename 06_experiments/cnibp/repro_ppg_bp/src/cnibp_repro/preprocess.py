@@ -41,7 +41,11 @@ def detrend_linear(x: np.ndarray) -> np.ndarray:
 
 
 def is_flatline(x: np.ndarray, std_threshold: float = 1e-3) -> bool:
-    return float(np.nanstd(x)) < std_threshold
+    x = np.asarray(x)
+    finite = x[np.isfinite(x)]
+    if finite.size < 2:
+        return True
+    return float(np.std(finite)) < std_threshold
 
 
 def _segment_zscore(x: np.ndarray, eps: float = 1e-6) -> np.ndarray:
@@ -133,6 +137,7 @@ def preprocess_records(records: List[Record], cfg: PreprocessConfig):
         "segments_removed_bad_target": 0,
         "segments_removed_flatline": 0,
         "segments_removed_bad_label_qc": 0,
+        "segments_removed_nonfinite": 0,
     }
 
     min_len = cfg.min_duration_sec * cfg.fs
@@ -164,6 +169,11 @@ def preprocess_records(records: List[Record], cfg: PreprocessConfig):
             p_seg = ppg[start:end]
             a_seg = abp[start:end]
 
+            # Strict finite-value check: non-finite samples destabilize training.
+            if not np.isfinite(p_seg).all() or not np.isfinite(a_seg).all():
+                stats["segments_removed_nonfinite"] += 1
+                continue
+
             # Segment-level QC: avoid almost-flat segments.
             if is_flatline(p_seg, cfg.flatline_std_threshold) or is_flatline(a_seg, cfg.flatline_std_threshold):
                 stats["segments_removed_flatline"] += 1
@@ -173,6 +183,9 @@ def preprocess_records(records: List[Record], cfg: PreprocessConfig):
                 p_seg = _segment_zscore(p_seg, eps=cfg.zscore_eps)
             elif cfg.ppg_norm_mode != "none":
                 raise ValueError(f"Unsupported ppg_norm_mode: {cfg.ppg_norm_mode}")
+            if not np.isfinite(p_seg).all():
+                stats["segments_removed_nonfinite"] += 1
+                continue
 
             if cfg.abp_label_mode == "paper":
                 target = _extract_sbp_dbp_from_abp(a_seg)

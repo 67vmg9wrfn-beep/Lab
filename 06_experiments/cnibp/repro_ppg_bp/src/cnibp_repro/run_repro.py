@@ -296,6 +296,7 @@ def main() -> None:
             "segments_removed_bad_target": 0,
             "segments_removed_flatline": 0,
             "segments_removed_bad_label_qc": 0,
+            "segments_removed_nonfinite": 0,
         }
         chunk_paths = []
         meta_parts = []
