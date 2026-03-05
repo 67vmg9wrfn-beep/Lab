@@ -180,6 +180,23 @@ def main() -> None:
         f"[VERSION] cnibp_repro={__version__} git={_detect_git_sha()} file={Path(__file__).resolve()}",
         flush=True,
     )
+    print(f"[CFG] config_path={args.config}", flush=True)
+    print(
+        (
+            f"[CFG] data: fs={cfg.get('fs')} window_sec={cfg.get('window_sec')} overlap={cfg.get('overlap')} "
+            f"min_duration_sec={cfg.get('min_duration_sec')} abp_max={cfg.get('abp_max')} "
+            f"ppg_norm_mode={cfg.get('ppg_norm_mode', 'none')} abp_label_mode={cfg.get('abp_label_mode', 'paper')}"
+        ),
+        flush=True,
+    )
+    print(
+        (
+            f"[CFG] train: n_splits={cfg.get('n_splits')} subject_level_split={cfg.get('subject_level_split')} "
+            f"batch_size={cfg.get('batch_size')} lr={cfg.get('lr')} max_epochs={cfg.get('max_epochs')} "
+            f"patience={cfg.get('patience')} max_folds={cfg.get('max_folds', 0)}"
+        ),
+        flush=True,
+    )
 
     out_root = Path(args.output_root)
 
