@@ -61,10 +61,11 @@ def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
 
 
 class IndexedArrayDataset(Dataset):
-    def __init__(self, X: np.ndarray, y: np.ndarray, indices: np.ndarray):
+    def __init__(self, X: np.ndarray, y: np.ndarray, indices: np.ndarray, return_index: bool = False):
         self.X = X
         self.y = y
         self.indices = indices.astype(np.int64)
+        self.return_index = bool(return_index)
 
     def __len__(self) -> int:
         return int(len(self.indices))
@@ -79,6 +80,8 @@ class IndexedArrayDataset(Dataset):
         np.nan_to_num(t_np, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
         x = torch.from_numpy(x_np)
         t = torch.from_numpy(t_np)
+        if self.return_index:
+            return x, t, idx
         return x, t
 
 
@@ -89,8 +92,9 @@ def _to_loader(
     batch_size: int,
     shuffle: bool,
     cfg: TrainConfig,
+    return_index: bool = False,
 ) -> DataLoader:
-    ds = IndexedArrayDataset(X, y, indices)
+    ds = IndexedArrayDataset(X, y, indices, return_index=return_index)
     kwargs = {
         "batch_size": batch_size,
         "shuffle": shuffle,
@@ -139,6 +143,34 @@ def _run_epoch(model, loader, criterion, optimizer, device, train: bool, scaler,
     m = _metrics(y_true, y_pred)
     m["loss"] = float(np.mean(losses))
     return m
+
+
+def _predict_with_indices(model, loader, device: str) -> pd.DataFrame:
+    rows = []
+    model.eval()
+    with torch.no_grad():
+        for xb, yb, idxb in loader:
+            xb = xb.to(device, non_blocking=True)
+            pred, _ = model(xb)
+            pred_np = pred.detach().cpu().numpy()
+            y_np = yb.detach().cpu().numpy()
+            idx_np = idxb.detach().cpu().numpy()
+            for idx, yt, yp in zip(idx_np, y_np, pred_np):
+                rows.append(
+                    {
+                        "sample_index": int(idx),
+                        "actual_sbp": float(yt[0]),
+                        "actual_dbp": float(yt[1]),
+                        "pred_sbp": float(yp[0]),
+                        "pred_dbp": float(yp[1]),
+                    }
+                )
+    df = pd.DataFrame(rows)
+    df["err_sbp"] = df["pred_sbp"] - df["actual_sbp"]
+    df["err_dbp"] = df["pred_dbp"] - df["actual_dbp"]
+    df["abs_err_sbp"] = df["err_sbp"].abs()
+    df["abs_err_dbp"] = df["err_dbp"].abs()
+    return df
 
 
 def _split_generator(cfg: TrainConfig, n: int, groups: np.ndarray | None):
@@ -195,6 +227,7 @@ def train_5fold(
         train_loader = _to_loader(X, y, tr_idx, cfg.batch_size, shuffle=True, cfg=cfg)
         val_loader = _to_loader(X, y, val_idx, cfg.batch_size, shuffle=False, cfg=cfg)
         test_loader = _to_loader(X, y, test_idx, cfg.batch_size, shuffle=False, cfg=cfg)
+        test_pred_loader = _to_loader(X, y, test_idx, cfg.batch_size, shuffle=False, cfg=cfg, return_index=True)
 
         model = CNNBiLSTMAttnRegressor().to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
@@ -336,9 +369,30 @@ def train_5fold(
                 f"[WARN] no finite validation improvement in fold {fold}; evaluating last-epoch weights.",
                 flush=True,
             )
-        test_m = _run_epoch(
-            model, test_loader, criterion, optimizer, device, train=False, scaler=scaler, use_amp=cfg.use_amp
-        )
+        test_pred_df = _predict_with_indices(model, test_pred_loader, device)
+        test_m = {
+            "mae_sbp": float(test_pred_df["abs_err_sbp"].mean()),
+            "mae_dbp": float(test_pred_df["abs_err_dbp"].mean()),
+            "mse_sbp": float(np.mean(test_pred_df["err_sbp"] ** 2)),
+            "mse_dbp": float(np.mean(test_pred_df["err_dbp"] ** 2)),
+            "loss": float(np.mean((test_pred_df["err_sbp"] ** 2 + test_pred_df["err_dbp"] ** 2) / 2.0)),
+        }
+
+        try:
+            metrics_check = _run_epoch(
+                model, test_loader, criterion, optimizer, device, train=False, scaler=scaler, use_amp=cfg.use_amp
+            )
+            for key in ["mae_sbp", "mae_dbp", "mse_sbp", "mse_dbp"]:
+                if not np.isclose(test_m[key], metrics_check[key], rtol=1e-5, atol=1e-6):
+                    print(
+                        f"[WARN] test metric mismatch in fold {fold} for {key}: "
+                        f"pred_df={test_m[key]:.6f} run_epoch={metrics_check[key]:.6f}",
+                        flush=True,
+                    )
+        except Exception as e:
+            print(f"[WARN] failed to cross-check test metrics for fold {fold}: {e}", flush=True)
+
+        test_pred_df.to_csv(fold_dir / "test_predictions.csv.gz", index=False, compression="gzip")
 
         fold_row = {
             "fold": fold,
