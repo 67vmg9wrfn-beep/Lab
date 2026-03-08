@@ -113,6 +113,16 @@ def _summarize_bins(df: pd.DataFrame, value_col: str, err_col: str, bins: Iterab
     return out
 
 
+def _load_existing_predictions(analysis_dir: Path, fold: int) -> pd.DataFrame | None:
+    pred_path = analysis_dir / f"fold_{fold}_predictions.csv.gz"
+    if not pred_path.exists():
+        return None
+    df = pd.read_csv(pred_path)
+    if "fold" not in df.columns:
+        df["fold"] = fold
+    return df
+
+
 def main() -> None:
     args = parse_args()
     run_dir = Path(args.run_dir)
@@ -136,6 +146,24 @@ def main() -> None:
         _split_generator(int(cfg["seed"]), int(cfg["n_splits"]), len(meta), groups),
         start=1,
     ):
+        existing_pred_df = _load_existing_predictions(analysis_dir, fold)
+        if existing_pred_df is not None:
+            pred_df = existing_pred_df
+            fold_metric = {
+                "fold": fold,
+                "mae_sbp": float(pred_df["abs_err_sbp"].mean()),
+                "mae_dbp": float(pred_df["abs_err_dbp"].mean()),
+                "me_sbp": float(pred_df["err_sbp"].mean()),
+                "me_dbp": float(pred_df["err_dbp"].mean()),
+                "rmse_sbp": float(np.sqrt(np.mean(pred_df["err_sbp"] ** 2))),
+                "rmse_dbp": float(np.sqrt(np.mean(pred_df["err_dbp"] ** 2))),
+                "n_test": int(len(pred_df)),
+            }
+            all_fold_metrics.append(fold_metric)
+            all_preds.append(pred_df)
+            print(f"[INFO] fold {fold} analysis already exists; skipping recompute.", flush=True)
+            continue
+
         fold_dir = train_dir / f"fold_{fold}"
         best_path = fold_dir / "best.pt"
         if not best_path.exists():
@@ -183,6 +211,7 @@ def main() -> None:
         pd.concat([sbp_summary, dbp_summary], ignore_index=True).to_csv(
             analysis_dir / f"fold_{fold}_range_error.csv", index=False
         )
+        print(f"[INFO] fold {fold} analysis saved.", flush=True)
 
     if not all_preds:
         raise RuntimeError(f"No fold predictions generated from {run_dir}")
